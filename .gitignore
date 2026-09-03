@@ -16,3 +16,7 @@
 /codex*.png
 /codex*-ui.xml
 local.properties
+/dist/
+*.jks
+*.keystore
+/keystore.properties

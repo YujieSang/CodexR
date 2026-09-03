@@ -15,6 +15,20 @@ CodexR is a personal, open-source Android app for using Codex directly on a root
 
 CodexR is an independent project. It is not an official OpenAI product and is not affiliated with or endorsed by OpenAI.
 
+## Download and quick start
+
+**Current preview: [v1.1.0-beta.1](https://github.com/YujieSang/CodexR/releases/tag/v1.1.0-beta.1)** · [Download APK](https://github.com/YujieSang/CodexR/releases/download/v1.1.0-beta.1/CodexR-v1.1.0-beta.1.apk) · [Release notes](docs/releases/v1.1.0-beta.1.md)
+
+1. Download the APK from the release page and install it on a rooted Android 7.0+ device. Allow installation from your browser or file manager when Android asks.
+2. Open CodexR and sign in with ChatGPT or enter an OpenAI Platform API key.
+3. Start a chat, choose a model and reasoning level, and review each requested root action. Grant CodexR access in your root manager when prompted.
+4. Allow notifications for the background-work indicator and Stop action. For long screen-off tasks, open **Background execution / battery settings** in the sidebar and choose **Unrestricted** / **Don't optimize**.
+
+> [!IMPORTANT]
+> This is an experimental, non-debuggable preview APK signed with the maintainer's existing **development certificate**, not a dedicated production certificate. It can update earlier CodexR builds signed with that same certificate. A locally built APK usually has a different certificate and cannot update it in place. Do not uninstall just to resolve a signature mismatch: uninstalling removes local chats, attachments, and saved sign-in. The signing key is not included in this repository or the release.
+
+The release includes `SHA256SUMS.txt` for download integrity checks. Android SDK and JDK are needed only to build from source, not to install the APK.
+
 ## Features
 
 - ChatGPT OAuth with PKCE, state validation, token refresh, and encrypted session storage
@@ -106,13 +120,33 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## Install
 
-With Android Debug Bridge connected to the device:
+For the downloaded preview, with Android Debug Bridge connected to the device:
+
+```bash
+adb install -r CodexR-v1.1.0-beta.1.apk
+```
+
+For a local debug build:
 
 ```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
 Launch CodexR, grant its root request when prompted, and select either ChatGPT sign-in or API-key access.
+
+### Release builds
+
+The release build is non-debuggable and unsigned by default. Build it with:
+
+```bash
+./gradlew testDebugUnitTest lintRelease assembleRelease
+```
+
+On Windows, `scripts/package-preview.ps1` runs the checks, builds both variants, aligns the release APK, signs it with the existing local Android development key, verifies the result, and writes a SHA-256 checksum into the ignored `dist/` folder. It never uploads the key. Use a dedicated, securely backed-up signing key for production distribution; changing certificates affects upgrade compatibility.
+
+```powershell
+./scripts/package-preview.ps1
+```
 
 ## Chat controls
 
@@ -164,6 +198,8 @@ Build and verify the debug APK:
 
 Instrumented tests require a connected Android device. Authentication-related instrumented tests may interact with app credential state, so use a test account or back up the app data first.
 
+The feature update was verified with 25 local tests, three targeted device tests on a rooted Lenovo TB-J716F running Android 16, and live checks for Markdown/LaTeX selection, AI-requested screenshots, background completion, and queued follow-ups with the screen off. This does not establish compatibility with every device or root manager.
+
 ## Project structure
 
 ```text
@@ -200,6 +236,7 @@ Important components:
 ## Known limitations
 
 - The app currently processes one model response at a time.
+- The published preview uses a development signing certificate; a production-signing migration may require extra upgrade steps.
 - Stopping cannot undo changes already made. Processes that deliberately detach into a new session may escape process-group cancellation.
 - Background execution cannot survive force-stop, revoked root/network access, or every vendor's power management policy.
 - ChatGPT OAuth depends on Codex backend behavior that may change.

@@ -7,6 +7,8 @@ import androidx.browser.customtabs.CustomTabsIntent
 import androidx.core.net.toUri
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -46,6 +48,8 @@ object OAuthManager {
     private val json = Json { ignoreUnknownKeys = true }
     private val secureRandom = SecureRandom()
     private val refreshMutex = Mutex()
+    private val sessionWriteLock = Any()
+    private val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -87,7 +91,7 @@ object OAuthManager {
             val code = parseAuthorizationInput(input, expectedState)
             awaitAppForeground()
             exchangeAuthorizationCode(code, verifier).also { session ->
-                OAuthSessionStore(context).save(session)
+                synchronized(sessionWriteLock) { OAuthSessionStore(context).save(session) }
             }
         } finally {
             manualRedirectInput = null
@@ -114,20 +118,27 @@ object OAuthManager {
     fun loadSession(context: Context): OAuthSession? = OAuthSessionStore(context).load()
 
     fun clearSession(context: Context) {
-        OAuthSessionStore(context).clear()
+        synchronized(sessionWriteLock) { OAuthSessionStore(context).clear() }
     }
 
     suspend fun validSession(context: Context, forceRefresh: Boolean = false): OAuthSession =
-        refreshMutex.withLock {
-            val stored = OAuthSessionStore(context).load()
-                ?: throw OAuthException("No saved ChatGPT session. Sign in again.")
-            if (!forceRefresh && !stored.needsRefresh()) {
-                return@withLock stored
+        // A stopped turn can stop awaiting immediately, without abandoning a rotated refresh
+        // token mid-flight. The small credential transaction finishes independently.
+        refreshScope.async {
+            val store = OAuthSessionStore(context.applicationContext)
+            refreshMutex.withLock {
+                val stored = store.load()
+                    ?: throw OAuthException("No saved ChatGPT session. Sign in again.")
+                if (!forceRefresh && !stored.needsRefresh()) return@withLock stored
+                refreshAccessToken(stored.refreshToken).also { refreshed ->
+                    // Never restore a signed-out account or overwrite a more recent login.
+                    synchronized(sessionWriteLock) {
+                        if (store.load()?.refreshToken == stored.refreshToken) store.save(refreshed)
+                        else throw OAuthException("ChatGPT session changed during refresh. Try again.")
+                    }
+                }
             }
-            refreshAccessToken(stored.refreshToken).also { refreshed ->
-                OAuthSessionStore(context).save(refreshed)
-            }
-        }
+        }.await()
 
     internal fun buildAuthorizationUrl(challenge: String, state: String): Uri =
         AUTHORIZE_URL.toUri().buildUpon()

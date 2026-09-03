@@ -25,6 +25,7 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
+    testOptions.unitTests.isIncludeAndroidResources = true
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -67,6 +68,13 @@ dependencies {
   implementation(libs.androidx.compose.material3)
   implementation(libs.androidx.compose.material.icons.extended)
   implementation(libs.androidx.browser)
+  // Native, selectable Markdown with offline math rendering.
+  implementation("io.noties.markwon:core:4.6.2")
+  implementation("io.noties.markwon:ext-tables:4.6.2")
+  implementation("io.noties.markwon:ext-strikethrough:4.6.2")
+  implementation("io.noties.markwon:ext-tasklist:4.6.2")
+  implementation("io.noties.markwon:inline-parser:4.6.2")
+  implementation("io.noties.markwon:ext-latex:4.6.2")
   // Tooling
   debugImplementation(libs.androidx.compose.ui.tooling)
   // Instrumented tests
@@ -76,6 +84,8 @@ dependencies {
   // Local tests: jUnit, coroutines, Android runner
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)
+  testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+  testImplementation("org.robolectric:robolectric:4.16")
 
   // Instrumented tests: jUnit rules and runners
   androidTestImplementation(libs.androidx.test.core)

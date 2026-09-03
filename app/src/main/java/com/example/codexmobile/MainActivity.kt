@@ -32,6 +32,7 @@ class MainActivity : ComponentActivity() {
                 if (isLoggedIn) {
                     ChatScreen(
                         onLogout = {
+                            (application as CodexApplication).resetChatController()
                             AuthManager.clearActive(this@MainActivity)
                             isLoggedIn = false
                         },

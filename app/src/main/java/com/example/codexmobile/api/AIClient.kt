@@ -28,6 +28,8 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.BufferedReader
 import java.util.UUID
+import okio.ByteString.Companion.toByteString
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 object AIClient {
@@ -54,15 +56,18 @@ object AIClient {
         messages: List<ChatMessage>,
         modelId: String = DEFAULT_CODEX_MODEL_ID,
         reasoningLevel: ReasoningLevel = ReasoningLevel.MEDIUM,
+        onPartial: (String) -> Unit = {},
+        onCaptureRequest: (String) -> Unit = {},
+        onReasoningItem: (String) -> Unit = {},
     ): String {
         val context = applicationContext ?: error("AIClient is not initialized")
         var credential = AuthManager.credential(context)
         return try {
-            sendRequest(credential, messages, modelId, reasoningLevel)
+            sendRequest(credential, messages, modelId, reasoningLevel, onPartial, onCaptureRequest, onReasoningItem)
         } catch (failure: CodexHttpException) {
             if (failure.statusCode != 401 || credential is AuthCredential.ApiKey) throw failure
             credential = AuthManager.credential(context, forceRefresh = true)
-            sendRequest(credential, messages, modelId, reasoningLevel)
+            sendRequest(credential, messages, modelId, reasoningLevel, onPartial, onCaptureRequest, onReasoningItem)
         }
     }
 
@@ -236,6 +241,9 @@ object AIClient {
         messages: List<ChatMessage>,
         modelId: String,
         reasoningLevel: ReasoningLevel,
+        onPartial: (String) -> Unit,
+        onCaptureRequest: (String) -> Unit,
+        onReasoningItem: (String) -> Unit,
     ): String =
         withContext(Dispatchers.IO) {
             val requestId = UUID.randomUUID().toString()
@@ -251,14 +259,14 @@ object AIClient {
                 .post(body)
             addAuthenticationHeaders(requestBuilder, credential)
 
-            client.newCall(requestBuilder.build()).execute().use { response ->
+            client.newCall(requestBuilder.build()).consumeCancellable { response ->
                 if (!response.isSuccessful) {
                     val errorBody = response.body?.string().orEmpty()
                     throw CodexHttpException(response.code, extractError(errorBody))
                 }
                 val responseBody = response.body
                     ?: throw CodexProtocolException("Codex returned an empty response")
-                parseEventStream(responseBody.charStream().buffered())
+                parseEventStream(responseBody.charStream().buffered(), onPartial, onCaptureRequest, onReasoningItem)
             }
         }
 
@@ -286,12 +294,47 @@ object AIClient {
         modelId: String = DEFAULT_CODEX_MODEL_ID,
         reasoningLevel: ReasoningLevel = ReasoningLevel.MEDIUM,
     ): JsonObject {
+        val attachmentBytes = messages.sumOf { message -> message.attachments.sumOf { File(it.localPath).length() } }
+        require(attachmentBytes <= 24L * 1024 * 1024) {
+            "This conversation has more than 24 MB of attachments. Start a new chat or edit earlier messages to remove attachments."
+        }
         val instructions = messages.firstOrNull { it.role == "system" }?.content
             ?: "You are a helpful assistant."
         val input = buildJsonArray {
             messages.asSequence()
                 .filter { it.role == "user" || it.role == "assistant" }
                 .forEach { message ->
+                    if (message.kind == "reasoning") {
+                        val item = json.parseToJsonElement(message.content).jsonObject
+                        if (item["type"]?.jsonPrimitive?.content == "reasoning") add(item)
+                        return@forEach
+                    }
+                    if (message.kind == "capture_call") {
+                        add(buildJsonObject {
+                            put("type", "function_call")
+                            put("call_id", message.toolCallId)
+                            put("name", "capture_screen")
+                            put("arguments", "{}")
+                        })
+                        // Process death may leave a tool call without a result. Never replay it silently.
+                        if (messages.none { it.kind == "capture_result" && it.toolCallId == message.toolCallId }) {
+                            add(buildJsonObject {
+                                put("type", "function_call_output")
+                                put("call_id", message.toolCallId)
+                                put("output", "Capture was interrupted; no screenshot is available.")
+                            })
+                        }
+                        return@forEach
+                    }
+                    if (message.kind == "capture_result") {
+                        add(buildJsonObject {
+                            put("type", "function_call_output")
+                            put("call_id", message.toolCallId)
+                            put("output", message.content)
+                        })
+                        if (message.attachments.isEmpty()) return@forEach
+                        // Images are sent as an adjacent user input for compatibility with both backends.
+                    }
                     add(buildJsonObject {
                         put("role", message.role)
                         put("content", buildJsonArray {
@@ -299,6 +342,25 @@ object AIClient {
                                 put("type", if (message.role == "assistant") "output_text" else "input_text")
                                 put("text", message.content)
                             })
+                            if (message.role == "user") message.attachments.forEach { attachment ->
+                                val file = File(attachment.localPath)
+                                applicationContext?.let { context ->
+                                    require(file.canonicalFile.parentFile == File(context.filesDir, "attachments").canonicalFile) {
+                                        "Attachment is outside CodexR's private storage."
+                                    }
+                                }
+                                require(file.isFile) { "Attachment is missing: ${attachment.name}. Edit this message to remove or reattach it." }
+                                require(file.length() <= 10L * 1024 * 1024) { "Attachment is too large: ${attachment.name}" }
+                                add(buildJsonObject {
+                                    if (attachment.mimeType.startsWith("image/")) {
+                                        put("type", "input_image")
+                                        put("image_url", "data:${attachment.mimeType};base64," + file.readBytes().toByteString().base64())
+                                    } else {
+                                        put("type", "input_text")
+                                        put("text", "Attached file: ${attachment.name}\n<file_content>\n${file.readText()}\n</file_content>")
+                                    }
+                                })
+                            }
                         })
                     })
                 }
@@ -309,6 +371,21 @@ object AIClient {
             put("stream", true)
             put("instructions", instructions)
             put("input", input)
+            put("parallel_tool_calls", false)
+            put("tools", buildJsonArray {
+                add(buildJsonObject {
+                    put("type", "function")
+                    put("name", "capture_screen")
+                    put("description", "Capture the Android device's currently visible screen to inspect UI, errors, or the result of an action. Returns an image. The app enforces root approval. Protected screens may be blank. Do not use a shell screencap command; call this tool to receive the image.")
+                    put("strict", true)
+                    put("parameters", buildJsonObject {
+                        put("type", "object")
+                        put("properties", buildJsonObject {})
+                        put("required", buildJsonArray {})
+                        put("additionalProperties", false)
+                    })
+                })
+            })
             put("text", buildJsonObject { put("verbosity", "low") })
             put("reasoning", buildJsonObject {
                 put("effort", reasoningLevel.wireValue)
@@ -318,9 +395,28 @@ object AIClient {
         }
     }
 
-    internal fun parseEventStream(reader: BufferedReader): String {
+    internal fun parseEventStream(reader: BufferedReader, onPartial: (String) -> Unit = {},
+        onCaptureRequest: (String) -> Unit = {}, onReasoningItem: (String) -> Unit = {}): String {
         val output = StringBuilder()
         val data = StringBuilder()
+        var completed = false
+        val captures = linkedSetOf<String>()
+        val reasoningItems = linkedMapOf<String, String>()
+
+        fun consumeItem(item: JsonObject) {
+            when (item["type"]?.jsonPrimitive?.contentOrNull) {
+                "function_call" -> {
+                    if (item["name"]?.jsonPrimitive?.contentOrNull != "capture_screen")
+                        throw CodexProtocolException("Unsupported tool requested")
+                    val arguments = item["arguments"]?.jsonPrimitive?.contentOrNull ?: "{}"
+                    if (json.parseToJsonElement(arguments).jsonObject.isNotEmpty())
+                        throw CodexProtocolException("Screen capture received unexpected arguments")
+                    captures += item["call_id"]?.jsonPrimitive?.contentOrNull
+                        ?: throw CodexProtocolException("Capture request has no call ID")
+                }
+                "reasoning" -> item["id"]?.jsonPrimitive?.contentOrNull?.let { reasoningItems[it] = item.toString() }
+            }
+        }
 
         fun consumeEvent() {
             if (data.isEmpty()) return
@@ -332,17 +428,25 @@ object AIClient {
             when (event["type"]?.jsonPrimitive?.contentOrNull) {
                 "response.output_text.delta" -> {
                     event["delta"]?.jsonPrimitive?.contentOrNull?.let(output::append)
+                    onPartial(output.toString())
                 }
                 "error" -> throw CodexProtocolException(extractEventError(event))
                 "response.failed" -> throw CodexProtocolException(extractFailedResponseError(event))
+                "response.incomplete" -> throw CodexProtocolException("Response was incomplete. Retry to continue.")
+                "response.output_item.done" -> (event["item"] as? JsonObject)?.let(::consumeItem)
                 "response.completed", "response.done" -> {
+                    completed = true
                     if (output.isEmpty()) extractCompletedText(event)?.let(output::append)
+                    onPartial(output.toString())
+                    ((event["response"] as? JsonObject)?.get("output") as? JsonArray)
+                        ?.mapNotNull { it as? JsonObject }?.forEach(::consumeItem)
                 }
             }
         }
 
-        reader.useLines { lines ->
-            lines.forEach { line ->
+        reader.use {
+            while (!completed) {
+                val line = it.readLine() ?: break
                 if (line.isBlank()) {
                     consumeEvent()
                 } else if (line.startsWith("data:")) {
@@ -352,6 +456,11 @@ object AIClient {
             }
         }
         consumeEvent()
+        if (!completed) throw CodexProtocolException("Connection ended before the response completed. Retry to continue.")
+        if (captures.size > 1) throw CodexProtocolException("Only one screen capture is supported per response")
+        reasoningItems.values.forEach(onReasoningItem)
+        captures.forEach(onCaptureRequest)
+        if (captures.isNotEmpty()) return output.toString()
         return output.toString().ifBlank {
             throw CodexProtocolException("Codex completed without returning text")
         }

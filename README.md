@@ -22,13 +22,20 @@ CodexR is an independent project. It is not an official OpenAI product and is no
 - API keys encrypted using Android Keystore
 - Live model catalog with model-specific reasoning-effort controls
 - Multiple persistent chat sessions with per-chat model settings
-- Root shell execution through [libsu](https://github.com/topjohnwu/libsu)
+- Isolated root shell execution with cancellable process groups
 - Captured `stdout`, `stderr`, and exit codes returned to the model
 - Approval-required root mode for reviewing each requested command
 - Optional full-access mode for automatic root command execution
 - A per-turn automatic-command limit to reduce runaway command loops
 - ChatGPT Codex usage windows, remaining percentages, and reset times
 - System, light, and dark themes
+- Selectable Markdown responses with tables, task lists, code blocks, and offline LaTeX rendering
+- Streaming responses, Stop, error retry, and long-press editing of user messages
+- Follow-ups queued during processing and delivered with the next tool result
+- Background execution with a work notification, notification Stop action, and screen-awake behavior
+- Image, text/code, and PDF attachments with local previews
+- An AI-callable `capture_screen` tool that returns the current display as an image
+- Manual screenshot attachment with a countdown
 
 ## Authentication
 
@@ -54,6 +61,8 @@ Never commit an API key to this repository or paste one into an issue.
 
 This is the default and recommended mode. CodexR displays the requested shell command and waits for explicit approval before running it as root. A denied command and optional reason are returned to the model.
 
+Choose **Allow for this chat** in an approval dialog to approve subsequent root commands and AI screen captures for that chat. Use **Revoke** in the chat to restore individual approvals. This grant does not apply to other chats and is cleared when the app process restarts.
+
 ### Full access
 
 Full-access mode runs model-requested commands immediately as root. The setting persists until disabled. CodexR limits automatic execution to 20 commands per user turn, but this is only a runaway-loop guard; it is not a security sandbox.
@@ -62,6 +71,7 @@ Full-access mode runs model-requested commands immediately as root. The setting 
 
 - Android 7.0 or newer (`minSdk 24`)
 - A rooted device with a working `su` implementation
+- Android's `setsid` utility (present on standard modern Android builds)
 - Android SDK 36 for building
 - JDK 17
 - Internet access for authentication and model requests
@@ -104,6 +114,34 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 Launch CodexR, grant its root request when prompted, and select either ChatGPT sign-in or API-key access.
 
+## Chat controls
+
+- **Edit:** long-press one of your messages, or tap its pencil. Editing stops the current turn and replaces the conversation from that prompt onward after confirmation. Commands already executed are not undone.
+- **Copy:** select response text directly, or use the copy icon to copy the original Markdown, including LaTeX source.
+- **Stop:** the square button cancels the network request and signals the active root process group. The work notification also has a Stop action. You can then edit the last prompt or retry.
+- **Retry:** after an error or interruption, Retry response continues from the saved conversation. It does not directly replay completed commands; the model may request additional commands under the selected approval policy.
+- **Follow-up:** type and send while CodexR is processing. The message is queued until the next tool result, or the end of the current response if no tool is used. Queued messages can be edited or removed. They remain queued if you stop or encounter an error.
+
+### Markdown and math
+
+Responses render headings, lists, tables, links, emphasis, code fences, and task lists. Math supports `$…$`, `$$…$$`, `\(…\)`, and `\[…\]`. Rendering is local; no external math-rendering service receives your messages.
+
+### Attachments and screen capture
+
+The paperclip menu accepts images, PDFs, and UTF-8 text/code files. Images are resized to a maximum edge of 1,600 pixels. PDFs are rendered into page images for compatibility with both authentication paths. Limits are 10 MB per imported file, 256 KB per text/code file, 8 attachments/PDF pages per message, and 24 MB of prepared attachments per conversation. Other binary formats are rejected with an explanation; export them to PDF or text first.
+
+The AI can call **`capture_screen`** when it needs to inspect the device UI. The image is returned to its next response and shown in the chat. AI captures use the same approval policy as root commands; session/full access enables automatic capture. Screenshots may contain private information, so review what is visible before granting access. Protected windows may appear blank; the tool does not unlock the device.
+
+Manual capture is also available in the paperclip menu. It waits three seconds so you can switch screens, then puts the screenshot in your draft. Nothing from a manual capture is sent until you press Send.
+
+### Background execution
+
+Active turns run independently of the activity, with a foreground-service notification and a partial wake lock. CodexR keeps its screen awake while processing, but does not prevent you from locking the device yourself. Screen-awake and CPU wake locks are released when work stops.
+
+Allow notification permission so Stop is readily accessible. Open **Background execution / battery settings** in the sidebar and set CodexR to **Unrestricted** / **Don't optimize** for reliable screen-off networking. Vendor power-saving settings may also need adjustment. Android deep sleep can restrict networking without an exemption, and Android 15+ limits `dataSync` foreground-service background time. See [Android's Doze guidance](https://developer.android.com/training/monitoring-device-state/doze-standby) and [foreground-service timeouts](https://developer.android.com/develop/background-work/services/fgs/timeout).
+
+If Android kills the process, CodexR records the interrupted turn on next launch. It never silently restarts a root command.
+
 ## Development checks
 
 Run unit tests:
@@ -145,11 +183,15 @@ Important components:
 - `AuthManager` selects the active ChatGPT or API-key credential.
 - `ShellManager` executes root commands and captures all process output.
 - `ChatViewModel` manages sessions, command approval, model settings, and usage state.
+- `ChatRuntime` separates real network/shell effects from conversation logic for offline regression tests.
+- `ExecutionService` maintains the active-work notification and wake lock.
+- `ScreenCapture` and `AttachmentStore` prepare private, model-readable attachments.
 
 ## Security notes
 
 - OAuth tokens and API keys are encrypted at rest with AES-GCM keys held by Android Keystore.
 - Chat history and model catalog data are stored in the app's private internal storage.
+- Attachments and screenshots are copied to private internal storage and sent to the selected model provider when included in a request. They are not encrypted separately from Android's device storage. Unreferenced attachment files may remain until app storage is cleared.
 - Root access can bypass normal Android application isolation. Device compromise can weaken any app-level credential protection.
 - Shell output is treated as untrusted data when returned to the model.
 - Review generated commands carefully, especially commands that change partitions, permissions, networking, packages, boot configuration, or user data.
@@ -158,6 +200,8 @@ Important components:
 ## Known limitations
 
 - The app currently processes one model response at a time.
+- Stopping cannot undo changes already made. Processes that deliberately detach into a new session may escape process-group cancellation.
+- Background execution cannot survive force-stop, revoked root/network access, or every vendor's power management policy.
 - ChatGPT OAuth depends on Codex backend behavior that may change.
 - API keys do not expose a simple "subscription remaining" value; API usage is managed through OpenAI Platform.
 - Root availability and behavior vary across Magisk, KernelSU, APatch, and device ROMs.

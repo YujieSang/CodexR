@@ -13,13 +13,42 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 
 /** Keeps user-initiated turns alive; never restarts commands after process death. */
 class ExecutionService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private lateinit var overlay: ExecutionOverlay
+    private var appVisible = true
+    private var overlayDismissedForTurn = false
+    private var typingPreviously = false
 
     override fun onCreate() {
         super.onCreate()
+        activeService = this
+        appVisible = applicationVisible
+        val controller = (application as CodexApplication).chatController
+        overlay = ExecutionOverlay(
+            context = this,
+            onStop = controller::stopExecution,
+            onFollowUp = controller::sendMessage,
+            onDismiss = { overlayDismissedForTurn = true },
+        )
+        controller.isTyping.onEach { typing ->
+            if (typing && !typingPreviously) overlayDismissedForTurn = false
+            typingPreviously = typing
+            refreshOverlay()
+        }.launchIn(serviceScope)
+        controller.streamingText.onEach { refreshOverlay() }.launchIn(serviceScope)
+        controller.phase.onEach { refreshOverlay() }.launchIn(serviceScope)
+        controller.attachmentStatus.onEach { refreshOverlay() }.launchIn(serviceScope)
+        controller.messages.onEach { refreshOverlay() }.launchIn(serviceScope)
         if (Build.VERSION.SDK_INT >= 26) {
             getSystemService(NotificationManager::class.java).createNotificationChannel(
                 NotificationChannel(CHANNEL, "Active CodexR work", NotificationManager.IMPORTANCE_LOW),
@@ -67,6 +96,9 @@ class ExecutionService : Service() {
     }
 
     override fun onDestroy() {
+        overlay.hide()
+        serviceScope.cancel()
+        if (activeService === this) activeService = null
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         super.onDestroy()
@@ -74,10 +106,36 @@ class ExecutionService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private fun onAppVisibilityChanged(visible: Boolean) {
+        appVisible = visible
+        refreshOverlay()
+    }
+
+    private fun refreshOverlay() {
+        if (!::overlay.isInitialized) return
+        val controller = (application as CodexApplication).chatController
+        if (appVisible || !controller.hasActiveWork() || overlayDismissedForTurn) {
+            overlay.hide()
+            return
+        }
+        val latest = controller.streamingText.value.takeIf { it.isNotBlank() }
+            ?: controller.attachmentStatus.value?.takeIf { it.isNotBlank() }
+            ?: controller.phase.value.takeIf { it.isNotBlank() }
+            ?: controller.messages.value.lastOrNull()?.content
+            ?: "Processing…"
+        overlay.showOrUpdate(latest)
+    }
+
     companion object {
         private const val CHANNEL = "codexr_execution"
         private const val STOP = "com.example.codexmobile.STOP"
+        @Volatile private var applicationVisible = true
+        @Volatile private var activeService: ExecutionService? = null
         fun start(context: Context) = ContextCompat.startForegroundService(context, Intent(context, ExecutionService::class.java))
         fun stop(context: Context) { context.stopService(Intent(context, ExecutionService::class.java)) }
+        fun setApplicationVisible(visible: Boolean) {
+            applicationVisible = visible
+            activeService?.onAppVisibilityChanged(visible)
+        }
     }
 }

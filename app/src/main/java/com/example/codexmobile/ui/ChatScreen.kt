@@ -5,6 +5,7 @@ import android.net.Uri
 import android.app.Activity
 import android.Manifest
 import android.os.Build
+import android.provider.Settings
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.view.WindowManager
@@ -150,10 +151,14 @@ fun ChatScreen(
     var showFullAccessConfirmation by remember { mutableStateOf(false) }
     var editingMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var showCaptureConfirmation by remember { mutableStateOf(false) }
+    var overlayAllowed by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         viewModel.addAttachments(uris)
     }
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    val overlayPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        overlayAllowed = Settings.canDrawOverlays(context)
+    }
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= 33) notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
@@ -247,6 +252,12 @@ fun ChatScreen(
                 onOpenApiUsage = {
                     context.startActivity(
                         Intent(Intent.ACTION_VIEW, Uri.parse("https://platform.openai.com/usage")),
+                    )
+                },
+                overlayAllowed = overlayAllowed,
+                onManageOverlay = {
+                    overlayPermission.launch(
+                        Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}")),
                     )
                 },
             )
@@ -433,6 +444,8 @@ private fun SessionDrawer(
     onThemeModeChanged: (ThemeMode) -> Unit,
     onRefreshUsage: () -> Unit,
     onOpenApiUsage: () -> Unit,
+    overlayAllowed: Boolean,
+    onManageOverlay: () -> Unit,
 ) {
     val context = LocalContext.current
     var showBatteryHelp by remember { mutableStateOf(false) }
@@ -491,6 +504,22 @@ private fun SessionDrawer(
         }
         HorizontalDivider()
         TextButton(onClick = { showBatteryHelp = true }, modifier = Modifier.padding(horizontal = 16.dp)) { Text("Background execution / battery settings") }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Floating work overlay", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    if (overlayAllowed) "Enabled while CodexR works in the background"
+                    else "Show progress, Stop, and Follow up over other apps",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            OutlinedButton(onClick = onManageOverlay) {
+                Text(if (overlayAllowed) "Manage" else "Enable")
+            }
+        }
         Text(
             "Appearance",
             style = MaterialTheme.typography.titleSmall,

@@ -61,6 +61,16 @@ class MainActivity : ComponentActivity() {
         OAuthManager.onAppForegroundChanged(true)
     }
 
+    override fun onStart() {
+        super.onStart()
+        ExecutionService.setApplicationVisible(true)
+    }
+
+    override fun onStop() {
+        ExecutionService.setApplicationVisible(false)
+        super.onStop()
+    }
+
     override fun onPause() {
         OAuthManager.onAppForegroundChanged(false)
         super.onPause()

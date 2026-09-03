@@ -47,7 +47,7 @@ The release includes `SHA256SUMS.txt` for download integrity checks. Android SDK
 - Selectable Markdown responses with tables, task lists, code blocks, and offline LaTeX rendering
 - Streaming responses, Stop, error retry, and long-press editing of user messages
 - Follow-ups queued during processing and delivered with the next tool result
-- Background execution with a work notification, notification Stop action, and screen-awake behavior
+- Background execution with a work notification, floating live-status overlay, Stop and follow-up controls, and screen-awake behavior
 - Image, text/code, and PDF attachments with local previews
 - An AI-callable `capture_screen` tool that returns the current display as an image
 - Manual screenshot attachment with a countdown
@@ -175,6 +175,8 @@ Manual capture is also available in the paperclip menu. It waits three seconds s
 
 Active turns run independently of the activity, with a foreground-service notification and a partial wake lock. CodexR keeps its screen awake while processing, but does not prevent you from locking the device yourself. Screen-awake and CPU wake locks are released when work stops.
 
+Enable **Floating work overlay** in the sidebar and grant Android's **Display over other apps** permission to see the latest partial response or execution status while another app is open. The draggable overlay has an immediate **Stop** button and an inline **Follow up** composer. Follow-ups use the same queue as the main chat and are delivered at the next tool boundary. The overlay is shown only during active background work, hides when CodexR returns to the foreground, and does not intentionally display over the lock screen.
+
 Allow notification permission so Stop is readily accessible. Open **Background execution / battery settings** in the sidebar and set CodexR to **Unrestricted** / **Don't optimize** for reliable screen-off networking. Vendor power-saving settings may also need adjustment. Android deep sleep can restrict networking without an exemption, and Android 15+ limits `dataSync` foreground-service background time. See [Android's Doze guidance](https://developer.android.com/training/monitoring-device-state/doze-standby) and [foreground-service timeouts](https://developer.android.com/develop/background-work/services/fgs/timeout).
 
 If Android kills the process, CodexR records the interrupted turn on next launch. It never silently restarts a root command.
@@ -201,7 +203,7 @@ Build and verify the debug APK:
 
 Instrumented tests require a connected Android device. Authentication-related instrumented tests may interact with app credential state, so use a test account or back up the app data first.
 
-The feature update was verified with 27 local tests, three targeted device tests on a rooted Lenovo TB-J716F running Android 16, and live checks for Markdown/LaTeX selection, AI-requested screenshots, background completion, and queued follow-ups with the screen off. This does not establish compatibility with every device or root manager.
+The feature update was verified with 29 local tests, three targeted device tests on a rooted Lenovo TB-J716F running Android 16, and live checks for Markdown/LaTeX selection, AI-requested screenshots, background completion, floating overlay controls, and queued follow-ups with the screen off. This does not establish compatibility with every device or root manager.
 
 ## Project structure
 

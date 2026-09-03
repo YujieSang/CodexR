@@ -40,6 +40,7 @@ The release includes `SHA256SUMS.txt` for download integrity checks. Android SDK
 - Captured `stdout`, `stderr`, and exit codes returned to the model
 - Approval-required root mode for reviewing each requested command
 - Optional full-access mode for automatic root command execution
+- Official-style structured `exec_command` calls with paired outputs and durable interruption state
 - A per-turn automatic-command limit to reduce runaway command loops
 - ChatGPT Codex usage windows, remaining percentages, and reset times
 - System, light, and dark themes
@@ -156,6 +157,8 @@ On Windows, `scripts/package-preview.ps1` runs the checks, builds both variants,
 - **Retry:** after an error or interruption, Retry response continues from the saved conversation. It does not directly replay completed commands; the model may request additional commands under the selected approval policy.
 - **Follow-up:** type and send while CodexR is processing. The message is queued until the next tool result, or the end of the current response if no tool is used. Queued messages can be edited or removed. They remain queued if you stop or encounter an error.
 
+Shell actions are stored as Responses API function-call/function-output pairs, rather than inferred from ordinary Markdown. Stopping during approval records that the command did not run; stopping during execution records an interrupted result and warns the model to inspect device state before retrying. This keeps stop, retry, and follow-up behavior stable in long conversations.
+
 ### Markdown and math
 
 Responses render headings, lists, tables, links, emphasis, code fences, and task lists. Math supports `$…$`, `$$…$$`, `\(…\)`, and `\[…\]`. Rendering is local; no external math-rendering service receives your messages.
@@ -198,7 +201,7 @@ Build and verify the debug APK:
 
 Instrumented tests require a connected Android device. Authentication-related instrumented tests may interact with app credential state, so use a test account or back up the app data first.
 
-The feature update was verified with 25 local tests, three targeted device tests on a rooted Lenovo TB-J716F running Android 16, and live checks for Markdown/LaTeX selection, AI-requested screenshots, background completion, and queued follow-ups with the screen off. This does not establish compatibility with every device or root manager.
+The feature update was verified with 27 local tests, three targeted device tests on a rooted Lenovo TB-J716F running Android 16, and live checks for Markdown/LaTeX selection, AI-requested screenshots, background completion, and queued follow-ups with the screen off. This does not establish compatibility with every device or root manager.
 
 ## Project structure
 

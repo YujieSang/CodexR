@@ -50,10 +50,17 @@ class StreamingAndAttachmentsTest {
         val item = """{"type":"function_call","name":"capture_screen","call_id":"call_1","arguments":"{}"}"""
         val stream = "data: {\"type\":\"response.output_item.done\",\"item\":$item}\n\n" +
             "data: {\"type\":\"response.completed\",\"response\":{\"output\":[$item]}}\n\n"
-        val calls = mutableListOf<String>()
-        val result = AIClient.parseEventStream(StringReader(stream).buffered(), onCaptureRequest = { calls += it })
-        assertEquals("", result)
-        assertEquals(listOf("call_1"), calls)
+        val result = AIClient.parseEventStream(StringReader(stream).buffered())
+        assertEquals("", result.text)
+        assertEquals(listOf("call_1"), result.toolCalls.map { it.callId })
+    }
+
+    @Test fun `exec command is a structured tool with durable call id and arguments`() {
+        val item = """{"type":"function_call","name":"exec_command","call_id":"call_shell","arguments":"{\"cmd\":\"id\"}"}"""
+        val stream = "data: {\"type\":\"response.completed\",\"response\":{\"output\":[$item]}}\n\n"
+        val result = AIClient.parseEventStream(StringReader(stream).buffered())
+        assertEquals("exec_command", result.toolCalls.single().name)
+        assertEquals("{\"cmd\":\"id\"}", result.toolCalls.single().arguments)
     }
 
     @Test fun `request contains image bytes text file content and proper tool result pairing`() {
@@ -73,5 +80,7 @@ class StreamingAndAttachmentsTest {
         val content = input[2].jsonObject["content"]!!.jsonArray
         assertEquals("data:image/jpeg;base64,AQID", content[1].jsonObject["image_url"]!!.jsonPrimitive.content)
         assertTrue(content[2].jsonObject["text"]!!.jsonPrimitive.content.contains("println(42)"))
+        val tools = body["tools"]!!.jsonArray
+        assertTrue(tools.any { it.jsonObject["name"]!!.jsonPrimitive.content == "exec_command" })
     }
 }

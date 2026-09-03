@@ -770,7 +770,14 @@ fun MessageBubble(message: ChatMessage, onEdit: (() -> Unit)? = null) {
                 .padding(12.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(if (isUser) "You" else if (message.kind == "tool") "Command result" else if (message.kind == "capture_result") "Screen capture" else "CodexR",
+                Text(when {
+                    isUser -> "You"
+                    message.kind == "tool_result" && message.toolName == "capture_screen" -> "Screen capture"
+                    message.kind == "tool_result" || message.kind == "tool" -> "Command result"
+                    message.kind == "tool_call" -> "CodexR action"
+                    message.kind == "capture_result" -> "Screen capture"
+                    else -> "CodexR"
+                },
                     color = textColor, style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f))
                 if (isUser && onEdit != null) IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) { Icon(Icons.Default.Edit, "Edit message", Modifier.size(16.dp)) }
                 IconButton(onClick = {

@@ -135,7 +135,7 @@ class AIClientTest {
 
         val result = AIClient.parseEventStream(StringReader(stream).buffered())
 
-        assertEquals("hello world", result)
+        assertEquals("hello world", result.text)
     }
 
     @Test
@@ -147,6 +147,6 @@ class AIClientTest {
 
         val result = AIClient.parseEventStream(StringReader(stream).buffered())
 
-        assertEquals("fallback", result)
+        assertEquals("fallback", result.text)
     }
 }

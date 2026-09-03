@@ -57,17 +57,15 @@ object AIClient {
         modelId: String = DEFAULT_CODEX_MODEL_ID,
         reasoningLevel: ReasoningLevel = ReasoningLevel.MEDIUM,
         onPartial: (String) -> Unit = {},
-        onCaptureRequest: (String) -> Unit = {},
-        onReasoningItem: (String) -> Unit = {},
-    ): String {
+    ): CodexResponse {
         val context = applicationContext ?: error("AIClient is not initialized")
         var credential = AuthManager.credential(context)
         return try {
-            sendRequest(credential, messages, modelId, reasoningLevel, onPartial, onCaptureRequest, onReasoningItem)
+            sendRequest(credential, messages, modelId, reasoningLevel, onPartial)
         } catch (failure: CodexHttpException) {
             if (failure.statusCode != 401 || credential is AuthCredential.ApiKey) throw failure
             credential = AuthManager.credential(context, forceRefresh = true)
-            sendRequest(credential, messages, modelId, reasoningLevel, onPartial, onCaptureRequest, onReasoningItem)
+            sendRequest(credential, messages, modelId, reasoningLevel, onPartial)
         }
     }
 
@@ -242,9 +240,7 @@ object AIClient {
         modelId: String,
         reasoningLevel: ReasoningLevel,
         onPartial: (String) -> Unit,
-        onCaptureRequest: (String) -> Unit,
-        onReasoningItem: (String) -> Unit,
-    ): String =
+    ): CodexResponse =
         withContext(Dispatchers.IO) {
             val requestId = UUID.randomUUID().toString()
             val body = buildRequestBody(messages, modelId, reasoningLevel).toString()
@@ -266,7 +262,7 @@ object AIClient {
                 }
                 val responseBody = response.body
                     ?: throw CodexProtocolException("Codex returned an empty response")
-                parseEventStream(responseBody.charStream().buffered(), onPartial, onCaptureRequest, onReasoningItem)
+                parseEventStream(responseBody.charStream().buffered(), onPartial)
             }
         }
 
@@ -309,24 +305,25 @@ object AIClient {
                         if (item["type"]?.jsonPrimitive?.content == "reasoning") add(item)
                         return@forEach
                     }
-                    if (message.kind == "capture_call") {
+                    if (message.kind == "tool_call" || message.kind == "capture_call") {
+                        val toolName = message.toolName ?: "capture_screen"
                         add(buildJsonObject {
                             put("type", "function_call")
                             put("call_id", message.toolCallId)
-                            put("name", "capture_screen")
-                            put("arguments", "{}")
+                            put("name", toolName)
+                            put("arguments", message.toolArguments ?: "{}")
                         })
                         // Process death may leave a tool call without a result. Never replay it silently.
-                        if (messages.none { it.kind == "capture_result" && it.toolCallId == message.toolCallId }) {
+                        if (messages.none { (it.kind == "tool_result" || it.kind == "capture_result") && it.toolCallId == message.toolCallId }) {
                             add(buildJsonObject {
                                 put("type", "function_call_output")
                                 put("call_id", message.toolCallId)
-                                put("output", "Capture was interrupted; no screenshot is available.")
+                                put("output", "This tool call was interrupted by the user or app; no completed result is available. Inspect state before retrying.")
                             })
                         }
                         return@forEach
                     }
-                    if (message.kind == "capture_result") {
+                    if (message.kind == "tool_result" || message.kind == "capture_result") {
                         add(buildJsonObject {
                             put("type", "function_call_output")
                             put("call_id", message.toolCallId)
@@ -375,6 +372,23 @@ object AIClient {
             put("tools", buildJsonArray {
                 add(buildJsonObject {
                     put("type", "function")
+                    put("name", "exec_command")
+                    put("description", "Run exactly one root shell command on the Android device. The app applies the user's approval policy, displays stdout, stderr, and exit code, and lets the user stop the running process immediately. Use this tool instead of printing a bash code block.")
+                    put("strict", true)
+                    put("parameters", buildJsonObject {
+                        put("type", "object")
+                        put("properties", buildJsonObject {
+                            put("cmd", buildJsonObject {
+                                put("type", "string")
+                                put("description", "The shell command to execute as root.")
+                            })
+                        })
+                        put("required", buildJsonArray { add(JsonPrimitive("cmd")) })
+                        put("additionalProperties", false)
+                    })
+                })
+                add(buildJsonObject {
+                    put("type", "function")
                     put("name", "capture_screen")
                     put("description", "Capture the Android device's currently visible screen to inspect UI, errors, or the result of an action. Returns an image. The app enforces root approval. Protected screens may be blank. Do not use a shell screencap command; call this tool to receive the image.")
                     put("strict", true)
@@ -395,24 +409,33 @@ object AIClient {
         }
     }
 
-    internal fun parseEventStream(reader: BufferedReader, onPartial: (String) -> Unit = {},
-        onCaptureRequest: (String) -> Unit = {}, onReasoningItem: (String) -> Unit = {}): String {
+    internal fun parseEventStream(
+        reader: BufferedReader,
+        onPartial: (String) -> Unit = {},
+    ): CodexResponse {
         val output = StringBuilder()
         val data = StringBuilder()
         var completed = false
-        val captures = linkedSetOf<String>()
+        val toolCalls = linkedMapOf<String, CodexToolCall>()
         val reasoningItems = linkedMapOf<String, String>()
 
         fun consumeItem(item: JsonObject) {
             when (item["type"]?.jsonPrimitive?.contentOrNull) {
                 "function_call" -> {
-                    if (item["name"]?.jsonPrimitive?.contentOrNull != "capture_screen")
-                        throw CodexProtocolException("Unsupported tool requested")
+                    val name = item["name"]?.jsonPrimitive?.contentOrNull
+                        ?: throw CodexProtocolException("Tool request has no name")
+                    if (name !in setOf("exec_command", "capture_screen"))
+                        throw CodexProtocolException("Unsupported tool requested: $name")
                     val arguments = item["arguments"]?.jsonPrimitive?.contentOrNull ?: "{}"
-                    if (json.parseToJsonElement(arguments).jsonObject.isNotEmpty())
+                    val parsed = runCatching { json.parseToJsonElement(arguments).jsonObject }
+                        .getOrElse { throw CodexProtocolException("Tool request has invalid arguments", it) }
+                    if (name == "capture_screen" && parsed.isNotEmpty())
                         throw CodexProtocolException("Screen capture received unexpected arguments")
-                    captures += item["call_id"]?.jsonPrimitive?.contentOrNull
-                        ?: throw CodexProtocolException("Capture request has no call ID")
+                    if (name == "exec_command" && parsed["cmd"]?.jsonPrimitive?.contentOrNull.isNullOrBlank())
+                        throw CodexProtocolException("Shell command is empty")
+                    val callId = item["call_id"]?.jsonPrimitive?.contentOrNull
+                        ?: throw CodexProtocolException("Tool request has no call ID")
+                    toolCalls[callId] = CodexToolCall(callId, name, arguments)
                 }
                 "reasoning" -> item["id"]?.jsonPrimitive?.contentOrNull?.let { reasoningItems[it] = item.toString() }
             }
@@ -457,13 +480,11 @@ object AIClient {
         }
         consumeEvent()
         if (!completed) throw CodexProtocolException("Connection ended before the response completed. Retry to continue.")
-        if (captures.size > 1) throw CodexProtocolException("Only one screen capture is supported per response")
-        reasoningItems.values.forEach(onReasoningItem)
-        captures.forEach(onCaptureRequest)
-        if (captures.isNotEmpty()) return output.toString()
-        return output.toString().ifBlank {
+        if (toolCalls.size > 1) throw CodexProtocolException("Only one tool call is supported per response")
+        val text = output.toString()
+        if (toolCalls.isEmpty() && text.isBlank())
             throw CodexProtocolException("Codex completed without returning text")
-        }
+        return CodexResponse(text, toolCalls.values.toList(), reasoningItems.values.toList())
     }
 
     private fun extractCompletedText(event: JsonObject): String? {
